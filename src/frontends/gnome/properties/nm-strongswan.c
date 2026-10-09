@@ -48,6 +48,7 @@ typedef void GtkRoot;
 		g_signal_connect_swapped (G_OBJECT (window), "delete-event", \
 								  G_CALLBACK (gtk_widget_hide_on_delete), window); \
 	} G_STMT_END
+#define gtk_window_destroy                          gtk_widget_destroy
 #endif
 
 /************** UI widget class **************/
@@ -160,7 +161,7 @@ static void update_pass_field (StrongswanPluginUiWidgetPrivate *priv, gboolean e
 static void update_cert_fields (StrongswanPluginUiWidgetPrivate *priv, gboolean enabled)
 {
 	GtkWidget *widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "cert-combo"));
-	gboolean cert = FALSE, key = FALSE;
+	gboolean cert = FALSE, key = FALSE, pkcs12 = FALSE;
 
 	switch (gtk_combo_box_get_active (GTK_COMBO_BOX (widget)))
 	{
@@ -176,6 +177,10 @@ static void update_cert_fields (StrongswanPluginUiWidgetPrivate *priv, gboolean 
 			break;
 		case 2:
 			break;
+		case 3:
+			update_pass_field (priv, TRUE);
+			pkcs12 = TRUE;
+			break;
 	}
 
 	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "cert-label")), enabled);
@@ -184,6 +189,9 @@ static void update_cert_fields (StrongswanPluginUiWidgetPrivate *priv, gboolean 
 	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "usercert-button")), enabled && cert);
 	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "userkey-label")), enabled && key);
 	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "userkey-button")), enabled && key);
+	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "pkcs12-label")), enabled && pkcs12);
+	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "pkcs12-entry")), enabled && pkcs12);
+	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "pkcs12-button")), enabled && pkcs12);
 }
 
 static void update_sensitive (StrongswanPluginUiWidgetPrivate *priv)
@@ -308,6 +316,71 @@ static void
 password_storage_changed_cb (GObject *entry, GParamSpec *pspec, gpointer user_data)
 {
 	settings_changed_cb (NULL, STRONGSWAN_PLUGIN_UI_WIDGET (user_data));
+}
+
+static void
+pkcs12_button_response_cb (GtkNativeDialog *native, int response, gpointer user_data)
+{
+	StrongswanPluginUiWidget *self = STRONGSWAN_PLUGIN_UI_WIDGET (user_data);
+	StrongswanPluginUiWidgetPrivate *priv = STRONGSWAN_PLUGIN_UI_WIDGET_GET_PRIVATE (self);
+	GtkWidget *widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "pkcs12-entry"));
+	GtkRoot *root;
+
+	root = gtk_widget_get_root (widget);
+	g_return_if_fail (GTK_IS_WINDOW (root));
+
+	if (response == GTK_RESPONSE_ACCEPT)
+	{
+		GFile *file;
+		gchar *pkcs12_bundle;
+		gsize pkcs12_bundle_length;
+		GError *err = NULL;
+
+		file = gtk_file_chooser_get_file (GTK_FILE_CHOOSER (native));
+		if (g_file_load_contents (file, NULL, &pkcs12_bundle, &pkcs12_bundle_length, NULL, &err))
+		{
+			gchar *pkcs12_bundle_base64 = g_base64_encode (pkcs12_bundle, pkcs12_bundle_length);
+
+			gtk_editable_set_text (GTK_EDITABLE (widget), pkcs12_bundle_base64);
+			g_free (pkcs12_bundle);
+			g_free (pkcs12_bundle_base64);
+		}
+		else
+		{
+			GtkWidget *error_dialog = gtk_message_dialog_new (GTK_WINDOW (root),
+															  GTK_DIALOG_MODAL,
+															  GTK_MESSAGE_ERROR,
+															  GTK_BUTTONS_CLOSE,
+															  "Unable to load PKCS #12 bundle from file: %s",
+															  err->message);
+
+			g_signal_connect (error_dialog, "response", G_CALLBACK (gtk_window_destroy), NULL);
+			gtk_widget_show (error_dialog);
+		}
+
+		g_object_unref (file);
+	}
+
+	g_object_unref (native);
+}
+
+static void
+pkcs12_button_clicked_cb (GtkButton *button, gpointer user_data)
+{
+	GtkFileChooserNative *native;
+	GtkRoot *root;
+
+	root = gtk_widget_get_root (GTK_WIDGET (button));
+	g_return_if_fail (GTK_IS_WINDOW (root));
+
+	native = gtk_file_chooser_native_new ("Open File",
+										  GTK_WINDOW (root),
+										  GTK_FILE_CHOOSER_ACTION_OPEN,
+										  "_Open",
+										  "_Cancel");
+
+	g_signal_connect (native, "response", G_CALLBACK (pkcs12_button_response_cb), user_data);
+	gtk_native_dialog_show (GTK_NATIVE_DIALOG (native));
 }
 
 static void
@@ -462,6 +535,7 @@ init_plugin_ui (StrongswanPluginUiWidget *self, NMConnection *connection, GError
 	gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (widget), _("Certificate/private key"));
 	gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (widget), _("Certificate/ssh-agent"));
 	gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (widget), _("Smartcard"));
+	gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (widget), _("PKCS #12 bundle"));
 	value = nm_setting_vpn_get_data_item (settings, "cert-source");
 	if (!value) {
 		value = method;
@@ -478,6 +552,9 @@ init_plugin_ui (StrongswanPluginUiWidget *self, NMConnection *connection, GError
 		if (g_strcmp0 (value, "smartcard") == 0) {
 			gtk_combo_box_set_active (GTK_COMBO_BOX (widget), 2);
 		}
+		if (g_strcmp0 (value, "pkcs12") == 0) {
+			gtk_combo_box_set_active (GTK_COMBO_BOX (widget), 3);
+		}
 	}
 	if (gtk_combo_box_get_active (GTK_COMBO_BOX (widget)) == -1)
 	{
@@ -491,6 +568,17 @@ init_plugin_ui (StrongswanPluginUiWidget *self, NMConnection *connection, GError
 
 	init_chooser (priv->builder, settings, "userkey", "userkey-chooser",
 				  "userkey-button", "userkey-button-label");
+
+	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "pkcs12-button"));
+	g_signal_connect (widget, "clicked", G_CALLBACK (pkcs12_button_clicked_cb), self);
+
+	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "pkcs12-entry"));
+	value = nm_setting_vpn_get_secret(settings, "pkcs12-bundle");
+	if (value)
+	{
+		gtk_editable_set_text (GTK_EDITABLE (widget), value);
+	}
+	g_signal_connect (G_OBJECT (widget), "changed", G_CALLBACK (settings_changed_cb), self);
 
 	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "virtual-check"));
 	value = nm_setting_vpn_get_data_item (settings, "virtual");
@@ -658,6 +746,13 @@ save_cert (NMSettingVpn *settings, GtkBuilder *builder)
 			nm_setting_set_secret_flags (NM_SETTING (settings), "password",
 										 NM_SETTING_SECRET_FLAG_NOT_SAVED, NULL);
 			str = "smartcard";
+			break;
+		case 3:
+			save_password_and_flags (settings, builder, "passwd-entry",
+									 "password");
+			save_password_and_flags (settings, builder, "pkcs12-entry",
+									 "pkcs12-bundle");
+			str = "pkcs12";
 			break;
 	}
 	nm_setting_vpn_add_data_item (settings, "cert-source", str);

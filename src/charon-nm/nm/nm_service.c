@@ -26,6 +26,7 @@
 #include <utils/identification.h>
 #include <config/peer_cfg.h>
 #include <credentials/certificates/x509.h>
+#include <credentials/containers/pkcs12.h>
 #include <networking/tun_device.h>
 #include <plugins/kernel_netlink/kernel_netlink_xfrmi.h>
 
@@ -609,6 +610,96 @@ static bool add_auth_cfg_cert(NMStrongswanPluginPrivate *priv,
 			g_set_error(err, NM_VPN_PLUGIN_ERROR,
 						NM_VPN_PLUGIN_ERROR_BAD_ARGUMENTS,
 						"No usable smartcard certificate found.");
+			return FALSE;
+		}
+	}
+	else if (streq(cert_source, "pkcs12"))
+	{
+		char *pkcs12_data_base64;
+		char *password;
+		chunk_t pkcs12_data = chunk_empty;
+		pkcs12_t *pkcs12;
+		enumerator_t *enumerator;
+		private_key_t *private;
+
+		pkcs12_data_base64 = (char*)nm_setting_vpn_get_secret(vpn, "pkcs12-bundle");
+		if (!pkcs12_data_base64)
+		{
+			g_set_error(err, NM_VPN_PLUGIN_ERROR,
+						NM_VPN_PLUGIN_ERROR_BAD_ARGUMENTS,
+						"PKCS #12 data is missing.");
+			return FALSE;
+		}
+
+		password = (char*)nm_setting_vpn_get_secret(vpn, "password");
+		if (password)
+		{
+			priv->creds->set_key_password(priv->creds, password);
+		}
+
+		pkcs12_data = chunk_from_base64(chunk_create(pkcs12_data_base64,
+										strlen(pkcs12_data_base64)), NULL);
+		pkcs12 = lib->creds->create(lib->creds, CRED_CONTAINER, CONTAINER_PKCS12,
+									BUILD_BLOB, pkcs12_data, BUILD_END);
+		chunk_clear(&pkcs12_data);
+		if (!pkcs12)
+		{
+			g_set_error(err, NM_VPN_PLUGIN_ERROR,
+						NM_VPN_PLUGIN_ERROR_BAD_ARGUMENTS,
+						"Loading PKCS #12 data failed.");
+			return FALSE;
+		}
+
+		enumerator = pkcs12->create_key_enumerator(pkcs12);
+		if (!enumerator->enumerate(enumerator, &private))
+		{
+			enumerator->destroy(enumerator);
+			pkcs12->container.destroy(&pkcs12->container);
+			g_set_error(err, NM_VPN_PLUGIN_ERROR,
+						NM_VPN_PLUGIN_ERROR_BAD_ARGUMENTS,
+						"PKCS #12 data does not contain a private key.");
+			return FALSE;
+		}
+		if (enumerator->enumerate(enumerator, NULL))
+		{
+			enumerator->destroy(enumerator);
+			pkcs12->container.destroy(&pkcs12->container);
+			g_set_error(err, NM_VPN_PLUGIN_ERROR,
+						NM_VPN_PLUGIN_ERROR_BAD_ARGUMENTS,
+						"PKCS #12 data contains more than one private key.");
+			return FALSE;
+		}
+		enumerator->destroy(enumerator);
+
+		enumerator = pkcs12->create_cert_enumerator(pkcs12);
+		while (enumerator->enumerate(enumerator, &cert))
+		{
+			public_key_t *public = NULL;
+
+			cert = cert->get_ref(cert);
+			if (!id && (public = cert->get_public_key(cert)) &&
+				private->belongs_to(private, public))
+			{
+				id = cert->get_subject(cert);
+				id = id->clone(id);
+				private = private->get_ref(private);
+				priv->creds->set_cert_and_key(priv->creds, cert, private);
+			}
+			else
+			{
+				priv->creds->add_certificate(priv->creds, cert);
+			}
+			DESTROY_IF(public);
+		}
+		enumerator->destroy(enumerator);
+		pkcs12->container.destroy(&pkcs12->container);
+
+		if (!id)
+		{
+			g_set_error(err, NM_VPN_PLUGIN_ERROR,
+						NM_VPN_PLUGIN_ERROR_BAD_ARGUMENTS,
+						"PKCS #12 data does not contain a certificate"
+						" corresponding to its private key.");
 			return FALSE;
 		}
 	}
@@ -1214,6 +1305,34 @@ static gboolean need_secrets(NMVpnServicePlugin *plugin, NMConnection *connectio
 			else if (streq(cert_source, "smartcard"))
 			{
 				need_secret = !nm_setting_vpn_get_secret(settings, "password");
+			}
+			else if (streq(cert_source, "pkcs12"))
+			{
+				char *pkcs12_data_base64;
+
+				pkcs12_data_base64 = (char*)nm_setting_vpn_get_secret(settings, "pkcs12-bundle");
+				if (pkcs12_data_base64)
+				{
+					chunk_t pkcs12_data = chunk_empty;
+					pkcs12_t *pkcs12;
+
+					pkcs12_data = chunk_from_base64(chunk_create(
+											pkcs12_data_base64,
+											strlen(pkcs12_data_base64)), NULL);
+					pkcs12 = lib->creds->create(lib->creds, CRED_CONTAINER,
+											CONTAINER_PKCS12, BUILD_BLOB, pkcs12_data,
+											BUILD_END);
+					chunk_clear(&pkcs12_data);
+
+					if (!pkcs12)
+					{
+						need_secret = !nm_setting_vpn_get_secret(settings, "password");
+					}
+					else
+					{
+						pkcs12->container.destroy(&pkcs12->container);
+					}
+				}
 			}
 			else
 			{

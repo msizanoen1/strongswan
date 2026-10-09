@@ -491,6 +491,45 @@
               </packing>
             </child>
             <child>
+              <object class="GtkLabel" id="pkcs12-label">
+                <property name="visible">True</property>
+                <property name="can-focus">False</property>
+                <property name="label" translatable="yes">PKCS #12 _bundle:</property>
+                <property name="use-underline">True</property>
+                <property name="xalign">0</property>
+              </object>
+              <packing>
+                <property name="left-attach">0</property>
+                <property name="top-attach">8</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkEntry" id="pkcs12-entry">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">A PKCS #12 bundle containing the private key and certificates for authentication.</property>
+                <property name="hexpand">True</property>
+                <property name="placeholder-text" translatable="yes">(Base64-encoded PKCS #12 bundle)</property>
+              </object>
+              <packing>
+                <property name="left-attach">1</property>
+                <property name="top-attach">8</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pkcs12-button">
+                <property name="label" translatable="yes">Load from file</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="receives-default">False</property>
+                <property name="use-underline">True</property>
+              </object>
+              <packing>
+                <property name="left-attach">2</property>
+                <property name="top-attach">8</property>
+              </packing>
+            </child>
+            <child>
               <placeholder/>
             </child>
           </object>
